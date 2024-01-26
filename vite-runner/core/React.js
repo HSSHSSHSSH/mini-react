@@ -9,17 +9,21 @@ function createTextNode(text) {
 }
 
 function createElement(type, props, ...children) {
-  return {
+  let element = {
     type,
     props: {
       ...props,
-      children: children.map((child) =>
-        typeof child === 'string' ? createTextNode(child) : child,
-      ),
+      children: children.map((child) => {
+        const isTextNode =
+          typeof child === 'string' || typeof child === 'number'
+        return isTextNode ? createTextNode(child) : child
+      }),
     },
   }
+  return element
 }
 
+let root = null
 function render(el, container) {
   nextUnitOfWork = {
     dom: container,
@@ -27,9 +31,7 @@ function render(el, container) {
       children: [el],
     },
   }
-
-  // el.props.children.forEach((child) => render(child, dom)) // 递归 children
-  // container.appendChild(dom) // 插入
+  root = nextUnitOfWork
 }
 
 let nextUnitOfWork = null
@@ -38,6 +40,9 @@ function workLoop(deadline) {
   while (nextUnitOfWork && !shouldYield) {
     nextUnitOfWork = performUnitOfWork(nextUnitOfWork) // 执行任务
     shouldYield = deadline.timeRemaining() < 1
+  }
+  if (!nextUnitOfWork && root) {
+    commitRoot()
   }
   requestIdleCallback(workLoop)
 }
@@ -50,12 +55,11 @@ function createDom(type) {
 
 function updateProps(dom, props) {
   Object.keys(props)
-      .filter((key) => key !== 'children')
-      .forEach((key) => (dom[key] = props[key]))
+    .filter((key) => key !== 'children')
+    .forEach((key) => (dom[key] = props[key]))
 }
 
-function initChildren(fiber) {
-  const children = fiber.props.children
+function initChildren(fiber, children) {
   let prevChild = null
   children.forEach((child, index) => {
     const newFiber = {
@@ -75,25 +79,57 @@ function initChildren(fiber) {
   })
 }
 
-function performUnitOfWork(fiber) {
-  if (!fiber.dom) {
-    // 创建 dom
-    const dom = (fiber.dom = createDom(fiber.type)) // 创建
-    // 处理 props
-    updateProps(dom, fiber.props)
-    // 插入 dom
-    fiber.parent.dom.appendChild(dom)
+function commitRoot() {
+  commitFiber(root.child)
+  root = null
+}
+
+function commitFiber(fiber) {
+  if (!fiber) return
+  let fiberParent = fiber.parent
+  while (!fiberParent.dom) {
+    fiberParent = fiberParent.parent
   }
-  // 转换链表
-  initChildren(fiber)
+  if (fiber.dom) {
+    fiberParent.dom.append(fiber.dom)
+  }
+  commitFiber(fiber.child)
+  commitFiber(fiber.sibling)
+}
+
+function updateFunctionComponent(fiber) {
+  const children = [fiber.type(fiber.props)]
+  initChildren(fiber, children)
+}
+
+function updateHostComponent(fiber) {
+  if (!fiber.dom) {
+    fiber.dom = createDom(fiber.type) // 创建
+  }
+  // 处理 props
+  updateProps(fiber.dom, fiber.props)
+  const children = fiber.props.children
+  initChildren(fiber, children)
+}
+
+function performUnitOfWork(fiber) {
+  const isFunctionComponent = fiber.type instanceof Function
+  if (isFunctionComponent) {
+    updateFunctionComponent(fiber)
+  } else {
+    updateHostComponent(fiber)
+  }
   // 返回下一个任务
   if (fiber.child) {
     return fiber.child
   }
-  if (fiber.sibling) {
-    return fiber.sibling
+  let nextFiber = fiber
+  while (nextFiber) {
+    if (nextFiber.sibling) {
+      return nextFiber.sibling
+    }
+    nextFiber = nextFiber.parent
   }
-  return fiber.parent?.sibling
 }
 
 requestIdleCallback(workLoop)
